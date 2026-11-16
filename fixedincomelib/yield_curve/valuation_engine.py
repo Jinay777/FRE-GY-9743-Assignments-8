@@ -201,13 +201,13 @@ class ValuationEngineProductRfrSwap(ValuationEngineProduct):
         self.cash_ = (
             self.fixed_leg_sign_ * self.fixed_cash_ + self.floating_leg_sign_ * self.float_cash_
         )
-        # TODO 2a: Set self.annuity_ to the fixed-leg annuity per unit notional.
-        # Use the nonzero fixed coupon and the fixed-leg PV already calculated.
-        raise NotImplementedError("TODO 2a: calculate the fixed-leg annuity")
+        # The fixed leg pays N * K * alpha_i at each date, so its PV is N * K * sum(alpha_i * D_i).
+        # Dividing out N and the coupon K leaves the annuity per unit notional.
+        self.annuity_ = self.fixed_value_ / (self.notional_ * self.fixed_rate_)
 
-        # TODO 2b: Set self.par_rate_or_spread_ to the OIS par rate in decimals.
-        # Use the floating-leg PV and the annuity from TODO 2a.
-        raise NotImplementedError("TODO 2b: calculate the OIS par rate")
+        # The par rate is the coupon that makes the fixed leg worth the floating leg:
+        # N * R * annuity = floating PV.
+        self.par_rate_or_spread_ = self.float_value_ / (self.notional_ * self.annuity_)
 
     def calculate_first_order_risk(
         self, gradient=None, scaler: float = 1.0, accumulate: bool = False
@@ -238,10 +238,18 @@ class ValuationEngineProductRfrSwap(ValuationEngineProduct):
         local_grad = []
         self.model_.resize_gradient(local_grad)
 
-        # TODO 2c: Accumulate the OIS par-rate gradient with respect to X^I
-        # in local_grad. Apply the quotient rule using both leg engines,
-        # keeping the fixed coupon constant and the model's component order.
-        raise NotImplementedError("TODO 2c: calculate the OIS par-rate gradient")
+        # R = F / (N * A), where F is the floating-leg PV and N * A = X / K is the fixed leg
+        # per unit coupon (X the fixed-leg PV, K the fixed coupon, held constant). Quotient rule:
+        #     dR = dF / (N A) - F / (N A)^2 * d(N A),   with   d(N A) = dX / K.
+        notional_annuity = self.notional_ * self.annuity_
+        self.floating_leg_engine_.calculate_first_order_risk(
+            local_grad, scaler=1.0 / notional_annuity, accumulate=True,
+        )
+        self.fixed_leg_engine_.calculate_first_order_risk(
+            local_grad,
+            scaler=-self.float_value_ / (notional_annuity ** 2 * self.fixed_rate_),
+            accumulate=True,
+        )
 
         return local_grad
 
